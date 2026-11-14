@@ -1,0 +1,49 @@
+name: 資料搬移（一次性 bootstrap）
+# 一次性：把主站 https://linhinet7451.github.io/twstock-ai/ 目前發布的整包資料
+# （manifest / scan / state / 全部 history，約 2,656 檔）複製進本 repo 的 data/。
+# 複製清單取自 state.json 的 done 欄位。完成後本 workflow 不再需要，可刪除。
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: data-update
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下載整包資料
+        run: |
+          set -e
+          BASE="https://linhinet7451.github.io/twstock-ai/data"
+          mkdir -p data/history
+          curl -fsSL "$BASE/manifest.json" -o data/manifest.json
+          curl -fsSL "$BASE/state.json" -o data/state.json
+          curl -fsSL "$BASE/scan.json.gz" -o data/scan.json.gz
+          python3 - <<'PY'
+          import json
+          codes = json.load(open('data/state.json'))['done']
+          with open('/tmp/codes.txt', 'w') as f:
+              f.write('\n'.join(codes))
+          print('history files to fetch:', len(codes))
+          PY
+          cat /tmp/codes.txt | xargs -P 16 -I{} sh -c 'curl -fsSL --retry 3 "https://linhinet7451.github.io/twstock-ai/data/history/{}.json.gz" -o "data/history/{}.json.gz" || echo "FAILED {}" >> /tmp/failed.txt'
+          touch /tmp/failed.txt
+          echo "failed count: $(wc -l < /tmp/failed.txt)"
+          cat /tmp/failed.txt
+          echo "downloaded: $(ls data/history | wc -l)"
+          python3 -c "import gzip; gzip.open('data/scan.json.gz').read(100); print('scan.json.gz OK')"
+      - name: Commit 資料
+        run: |
+          git config user.name "twstock-data-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "無資料變動，不 commit"
+          else
+            git commit -m "data: bootstrap 複製自主站（一次性搬移）"
+            git push
+          fi

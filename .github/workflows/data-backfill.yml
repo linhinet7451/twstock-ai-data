@@ -1,0 +1,86 @@
+name: 歷史回補（10 年，可續跑）
+# 觸發方式：
+#  1) workflow_dispatch 手動觸發（可指定 batch / years）
+#  2) push 到 backend/BOOTSTRAP（初始部署時自動啟動第一批）
+# 每批把進度寫入 data/state.json 並 commit；若尚餘股票且未達批次上限，
+# 本 workflow 會以 workflow_dispatch 自動接力下一批（GITHUB_TOKEN 觸發的
+# workflow_dispatch 是少數允許觸發新 run 的事件），直到回補完成。
+# 全部股票約 2,700 檔（含已下市會自動略過），每批 300 檔約需 10 批。
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "本批處理檔數"
+        required: false
+        default: "300"
+      years:
+        description: "回補年數"
+        required: false
+        default: "10"
+  push:
+    branches: [main]
+    paths: ["backend/BOOTSTRAP"]
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: data-update
+  cancel-in-progress: false
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 回補歷史
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: |
+          python3 --version
+          ls -la backend/
+          BATCH="${{ github.event.inputs.batch }}"
+          YEARS="${{ github.event.inputs.years }}"
+          BATCH="${BATCH:-300}"
+          YEARS="${YEARS:-10}"
+          echo "backfill years=$YEARS batch=$BATCH"
+          set +e
+          python3 backend/update_data.py backfill --years "$YEARS" --batch "$BATCH" --sleep 0.5 2>&1 | tee backfill_run.log
+          echo "script_exit=${PIPESTATUS[0]}" | tee -a backfill_run.log
+          mkdir -p data
+          cp backfill_run.log data/last_backfill.log
+          exit 0   # 永遠成功：讓 Commit 步驟把 log 與進度存回 repo 便於判讀
+      - name: Commit 資料與進度
+        if: always()
+        id: commit
+        run: |
+          git config user.name "twstock-data-bot"
+          git config user.email "actions@github.com"
+          mkdir -p data
+          git add data/
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "data: 歷史回補（自動接力）"
+            git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 自動接力下一批
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f data/state.json ]; then echo "state.json 不存在（回補步驟未產生進度），不接力"; exit 0; fi
+          REMAINING=$(python3 -c "import json;print(json.load(open('data/state.json')).get('remaining',0))")
+          RUNS=$(python3 -c "import json;print(json.load(open('data/state.json')).get('runs',0))")
+          RL=$(python3 -c "import json;print(json.load(open('data/state.json')).get('rate_limited',False))")
+          ERR=$(python3 -c "import json;print(json.load(open('data/state.json')).get('last_error',''))")
+          echo "remaining=$REMAINING runs=$RUNS rate_limited=$RL last_error=$ERR"
+          if [ "$REMAINING" -gt 0 ] && [ "$RUNS" -lt 20 ] && [ "$RL" != "True" ] && [ -z "$ERR" ]; then
+            gh workflow run data-backfill.yml
+            echo "已接力下一批"
+          else
+            echo "回補完成、達接力上限、被限流或發生錯誤，停止接力（進度已 commit，可稍後手動再觸發）"
+          fi
