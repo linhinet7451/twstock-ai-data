@@ -1,11 +1,11 @@
 {
   "app": "twstock-web",
-  "updatedAt": "2026-11-18T18:26:46Z",
-  "latestDate": "2026-11-18",
+  "updatedAt": "2026-11-19T16:51:46Z",
+  "latestDate": "2026-11-19",
   "stockCount": 2656,
   "scanStocks": 2614,
   "scanFile": "scan.json.gz",
-  "scanBytes": 16536175,
-  "scanRawBytes": 49799032,
+  "scanBytes": 16539534,
+  "scanRawBytes": 49804131,
   "source": "FinMind history + TWSE/TPEx official daily quotes"
 }
